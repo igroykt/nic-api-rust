@@ -1,0 +1,29 @@
+[package]
+name = "nic-api-rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "Rust library for managing DNS zones and records via NIC.RU API"
+license = "GPL-3.0"
+repository = "https://github.com/yourusername/nic-api-rust"
+keywords = ["dns", "nic-ru", "api", "oauth2"]
+categories = ["api-bindings", "network-programming"]
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+quick-xml = { version = "0.31", features = ["serialize"] }
+oauth2 = "4.3"  # Using slightly older version to avoid rustc 1.83 requirement
+thiserror = "1.0"
+url = "2.5"
+log = "0.4"
+
+[dev-dependencies]
+tokio-test = "0.4"
+env_logger = "0.11"
+
+[lib]
+name = "nic_api_rust"
+path = "src/lib.rs"
