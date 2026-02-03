@@ -2,6 +2,8 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
+ВНИМАНИЕ: проект создан с помощью вайб-кодинга. Используйте на свой страх и риск.
+
 Rust библиотека для управления DNS зонами и записями через API NIC.RU (Ru-Center).
 
 Это порт популярной Python библиотеки [nic-api](https://github.com/andr1an/nic-api) на язык Rust с полной поддержкой асинхронных операций.
