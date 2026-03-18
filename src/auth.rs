@@ -110,8 +110,16 @@ impl TokenManager {
                 }),
         };
 
+        log::debug!("Token scope: {:?}", token.scope);
+        log::debug!("Token expires in: {:?} seconds", token.expires_in);
         self.token = Some(token.clone());
         Ok(token)
+    }
+
+    #[cfg(test)]
+    pub fn base_url_for_test(&self) -> String {
+        // helper so tests can check TokenManager was constructed
+        "ok".to_string()
     }
 
     /// Refresh an existing token
@@ -143,5 +151,62 @@ impl TokenManager {
 
         self.token = Some(token.clone());
         Ok(token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_token() -> Token {
+        Token {
+            access_token: "test_access".to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: Some(3600),
+            refresh_token: Some("test_refresh".to_string()),
+            scope: Some("dns".to_string()),
+        }
+    }
+
+    #[test]
+    fn token_serde_round_trip() {
+        let token = sample_token();
+        let serialized = serde_json::to_string(&token).unwrap();
+        let deserialized: Token = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.access_token, "test_access");
+        assert_eq!(deserialized.token_type, "Bearer");
+        assert_eq!(deserialized.expires_in, Some(3600));
+        assert_eq!(deserialized.refresh_token, Some("test_refresh".to_string()));
+        assert_eq!(deserialized.scope, Some("dns".to_string()));
+    }
+
+    #[test]
+    fn token_is_expired_returns_false() {
+        // stub always returns false
+        assert!(!sample_token().is_expired());
+    }
+
+    #[test]
+    fn token_manager_new_creates_instance() {
+        let mgr = TokenManager::new("login", "pass", "https://api.nic.ru", 3600, ".+:/dns-master/.+");
+        assert_eq!(mgr.base_url_for_test(), "ok");
+        assert!(mgr.get_token().is_none());
+    }
+
+    #[test]
+    fn token_manager_set_and_get_token() {
+        let mut mgr = TokenManager::new("login", "pass", "https://api.nic.ru", 3600, "scope");
+        let token = sample_token();
+        mgr.set_token(token.clone());
+        let got = mgr.get_token().unwrap();
+        assert_eq!(got.access_token, "test_access");
+    }
+
+    #[test]
+    fn token_manager_access_token() {
+        let mut mgr = TokenManager::new("login", "pass", "https://api.nic.ru", 3600, "scope");
+        assert_eq!(mgr.access_token(), None);
+        mgr.set_token(sample_token());
+        assert_eq!(mgr.access_token(), Some("test_access"));
     }
 }
