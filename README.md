@@ -31,7 +31,7 @@
 
 ```toml
 [dependencies]
-nic-api-rust = "0.1.0"
+nic-api-rust = { git = "https://github.com/igroykt/nic-api-rust" }
 tokio = { version = "1", features = ["full"] }
 ```
 
