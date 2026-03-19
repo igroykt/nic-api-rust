@@ -1,6 +1,5 @@
 # nic-api-rust
 
-[![Crates.io](https://img.shields.io/crates/v/nic-api-rust.svg)](https://crates.io/crates/nic-api-rust)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 Библиотека на Rust для управления DNS-записями через [DNS API NIC.RU](https://nic.ru).
