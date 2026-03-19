@@ -1,19 +1,20 @@
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use reqwest::Client;
+use tokio::sync::Mutex;
 
 use crate::auth::{Token, TokenManager};
 use crate::error::{DnsApiError, Result};
 use crate::models::{
-    AaaaRecord, ARecord, CnameRecord, DnameRecord, DnsRecord, MxRecord, NicService, NicZone,
-    NsRecord, PtrRecord, SrvRecord, TxtRecord,
+    AaaaRecord, ARecord, CnameRecord, DnameRecord, DnsRecord, HinfoRecord,
+    MxRecord, NaptrRecord, NicService, NicZone, NicZoneRevision, NsRecord, PtrRecord, RpRecord,
+    SoaRecord, SrvRecord, TxtRecord,
 };
 
 /// Main API client for interacting with NIC.RU DNS API
 pub struct DnsApi {
-    client: Client,
+    http_client: reqwest::Client,
     base_url: String,
-    token_manager: TokenManager,
+    token_manager: Mutex<TokenManager>,
     pub default_service: Option<String>,
     pub default_zone: Option<String>,
 }
@@ -28,12 +29,16 @@ impl DnsApi {
     /// * `token` - Optional existing OAuth token
     /// * `offline` - Token lifetime in seconds (default: 3600)
     /// * `scope` - OAuth scope (default: ".+:/dns-master/.+")
+    /// * `default_service` - Optional default service name (NIC_SERVICE_ID)
+    /// * `default_zone` - Optional default zone name
     pub fn new(
         app_login: impl Into<String>,
         app_password: impl Into<String>,
         token: Option<Token>,
         offline: Option<u64>,
         scope: Option<String>,
+        default_service: Option<String>,
+        default_zone: Option<String>,
     ) -> Self {
         let base_url = "https://api.nic.ru".to_string();
         let offline = offline.unwrap_or(3600);
@@ -52,28 +57,50 @@ impl DnsApi {
         }
 
         Self {
-            client: Client::new(),
+            http_client: reqwest::Client::new(),
             base_url,
-            token_manager,
-            default_service: None,
-            default_zone: None,
+            token_manager: Mutex::new(token_manager),
+            default_service,
+            default_zone,
         }
+    }
+
+    /// Sets the default service name (NIC_SERVICE_ID) for DNS operations.
+    pub fn set_default_service(&mut self, service: impl Into<String>) {
+        self.default_service = Some(service.into());
+    }
+
+    /// Sets the default zone name for DNS operations.
+    pub fn set_default_zone(&mut self, zone: impl Into<String>) {
+        self.default_zone = Some(zone.into());
     }
 
     /// Get OAuth token using username and password
     pub async fn get_token(
-        &mut self,
+        &self,
         username: impl Into<String>,
         password: impl Into<String>,
     ) -> Result<Token> {
-        self.token_manager
-            .get_token_with_password(username, password)
-            .await
+        let mut tm = self.token_manager.lock().await;
+        tm.get_token_with_password(username, password).await
     }
 
     /// Refresh OAuth token
-    pub async fn refresh_token(&mut self, refresh_token: impl Into<String>) -> Result<Token> {
-        self.token_manager.refresh_token(refresh_token).await
+    pub async fn refresh_token(&self, refresh_token: impl Into<String>) -> Result<Token> {
+        let mut tm = self.token_manager.lock().await;
+        tm.refresh_token(refresh_token).await
+    }
+
+    /// Get the current token (if any)
+    pub async fn token(&self) -> Option<Token> {
+        let tm = self.token_manager.lock().await;
+        tm.token().cloned()
+    }
+
+    /// Set the current token directly
+    pub async fn set_token(&self, token: Token) {
+        let mut tm = self.token_manager.lock().await;
+        tm.set_token(token);
     }
 
     /// Build full API URL
@@ -81,117 +108,91 @@ impl DnsApi {
         format!("{}/dns-master/{}", self.base_url, path)
     }
 
-    /// Make authenticated GET request
-    async fn get(&self, path: &str) -> Result<String> {
-        let token = self
-            .token_manager
-            .access_token()
-            .ok_or(DnsApiError::OAuth2Error(
-                "No access token available".to_string(),
-            ))?;
+    /// Get a valid token, auto-refreshing if expired
+    async fn get_valid_token(&self) -> Result<String> {
+        let mut tm = self.token_manager.lock().await;
+        tm.ensure_valid_token().await
+    }
 
-        let url = self.url_for(path);
-        log::debug!("GET {}", url);
+    /// Refresh the token (used after 4097 error)
+    async fn refresh_token_internal(&self) -> Result<()> {
+        let mut tm = self.token_manager.lock().await;
+        let refresh_tok = tm.token()
+            .and_then(|t| t.refresh_token.clone())
+            .ok_or_else(|| DnsApiError::OAuth2Error("No refresh token available for retry".to_string()))?;
+        tm.refresh_token(&refresh_tok).await?;
+        Ok(())
+    }
 
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(token)
-            .send()
-            .await?;
-
+    /// Execute a single HTTP request (no retry)
+    async fn execute_request(
+        &self,
+        token: &str,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<&str>,
+        content_type: &str,
+    ) -> Result<String> {
+        log::debug!("{} {}", method, url);
+        let mut request = self.http_client.request(method, url)
+            .header("Authorization", format!("Bearer {}", token));
+        if let Some(body_str) = body {
+            log::debug!("Request body: {}", body_str);
+            request = request
+                .header("Content-Type", content_type)
+                .body(body_str.to_string());
+        }
+        let response = request.send().await?;
         log::debug!("Response status: {}", response.status());
         let text = response.text().await?;
         log::debug!("Response body: {}", text);
         self.check_response(&text)?;
         Ok(text)
+    }
+
+    /// Execute request with auto-retry on token expiry
+    async fn execute_with_retry(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&str>,
+        content_type: &str,
+    ) -> Result<String> {
+        let url = self.url_for(path);
+        let token = self.get_valid_token().await?;
+        let result = self.execute_request(&token, method.clone(), &url, body, content_type).await;
+        match result {
+            Err(DnsApiError::ExpiredToken) => {
+                log::info!("Token expired during request, refreshing and retrying...");
+                self.refresh_token_internal().await?;
+                let new_token = self.get_valid_token().await?;
+                self.execute_request(&new_token, method, &url, body, content_type).await
+            }
+            other => other,
+        }
+    }
+
+    /// Make authenticated GET request
+    async fn get(&self, path: &str) -> Result<String> {
+        self.execute_with_retry(reqwest::Method::GET, path, None, "application/xml").await
     }
 
     /// Make authenticated POST request
-    async fn post(&self, path: &str, data: Option<&str>) -> Result<String> {
-        let token = self
-            .token_manager
-            .access_token()
-            .ok_or(DnsApiError::OAuth2Error(
-                "No access token available".to_string(),
-            ))?;
-
-        let url = self.url_for(path);
-        log::debug!("POST {}", url);
-
-        let mut request = self.client.post(url).bearer_auth(token);
-
-        if let Some(data) = data {
-            log::debug!("Request body: {}", data);
-            request = request
-                .header("Content-Type", "application/xml")
-                .body(data.to_string());
-        }
-
-        let response = request.send().await?;
-        log::debug!("Response status: {}", response.status());
-        let text = response.text().await?;
-        log::debug!("Response body: {}", text);
-        self.check_response(&text)?;
-        Ok(text)
+    async fn post(&self, path: &str, body: Option<&str>) -> Result<String> {
+        self.execute_with_retry(reqwest::Method::POST, path, body, "application/xml").await
     }
 
     /// Make authenticated PUT request
-    async fn put(&self, path: &str, data: Option<&str>) -> Result<String> {
-        let token = self
-            .token_manager
-            .access_token()
-            .ok_or(DnsApiError::OAuth2Error(
-                "No access token available".to_string(),
-            ))?;
-
-        let url = self.url_for(path);
-        log::debug!("PUT {}", url);
-
-        let mut request = self.client.put(url).bearer_auth(token);
-
-        if let Some(data) = data {
-            log::debug!("Request body: {}", data);
-            request = request
-                .header("Content-Type", "application/xml")
-                .body(data.to_string());
-        }
-
-        let response = request.send().await?;
-        log::debug!("Response status: {}", response.status());
-        let text = response.text().await?;
-        log::debug!("Response body: {}", text);
-        self.check_response(&text)?;
-        Ok(text)
+    async fn put(&self, path: &str, body: Option<&str>) -> Result<String> {
+        self.execute_with_retry(reqwest::Method::PUT, path, body, "application/xml").await
     }
 
     /// Make authenticated DELETE request
     async fn delete(&self, path: &str) -> Result<String> {
-        let token = self
-            .token_manager
-            .access_token()
-            .ok_or(DnsApiError::OAuth2Error(
-                "No access token available".to_string(),
-            ))?;
-
-        let url = self.url_for(path);
-        log::debug!("DELETE {}", url);
-
-        let response = self
-            .client
-            .delete(url)
-            .bearer_auth(token)
-            .send()
-            .await?;
-
-        log::debug!("Response status: {}", response.status());
-        let text = response.text().await?;
-        log::debug!("Response body: {}", text);
-        self.check_response(&text)?;
-        Ok(text)
+        self.execute_with_retry(reqwest::Method::DELETE, path, None, "application/xml").await
     }
 
-    /// Check API response for errors
+    /// Check API response for errors.
     fn check_response(&self, xml: &str) -> Result<()> {
         let mut reader = Reader::from_str(xml);
         reader.trim_text(true);
@@ -206,7 +207,7 @@ impl DnsApi {
                 Ok(Event::Start(e)) => match e.name().as_ref() {
                     b"status" => {
                         if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                            status = t.unescape().unwrap().to_string();
+                            status = t.unescape().unwrap_or_default().to_string();
                         }
                     }
                     b"error" => {
@@ -218,13 +219,15 @@ impl DnsApi {
                             }
                         }
                         if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                            error_text = t.unescape().unwrap().to_string();
+                            error_text = t.unescape().unwrap_or_default().to_string();
                         }
                     }
                     _ => {}
                 },
                 Ok(Event::Eof) => break,
-                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
+                Err(e) => {
+                    return Err(DnsApiError::XmlError(e.to_string()));
+                }
                 _ => {}
             }
             buf.clear();
@@ -285,58 +288,10 @@ impl DnsApi {
         Ok(data_content)
     }
 
-    /// Get list of available services
-    pub async fn services(&self) -> Result<Vec<NicService>> {
-        let response = self.get("services").await?;
-        let data = self.extract_data(&response)?;
-        
-        let mut services = Vec::new();
-        let mut reader = Reader::from_str(&data);
-        reader.trim_text(true);
-        
-        let mut buf = Vec::new();
-        #[allow(unused_assignments)]
-        let mut current_element = String::new();
-        
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"service" => {
-                    // Capture the entire service element
-                    current_element = format!("<{}", String::from_utf8_lossy(e.name().as_ref()));
-                    for attr in e.attributes().flatten() {
-                        current_element.push_str(&format!(
-                            " {}=\"{}\"",
-                            String::from_utf8_lossy(attr.key.as_ref()),
-                            attr.unescape_value().unwrap()
-                        ));
-                    }
-                    current_element.push_str(" />");
-                    
-                    if let Ok(service) = NicService::from_xml(&current_element) {
-                        services.push(service);
-                    }
-                }
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
-                _ => {}
-            }
-            buf.clear();
-        }
-        
-        Ok(services)
-    }
-
-    /// Get DNS zones for a service
-    pub async fn zones(&self, service: Option<&str>) -> Result<Vec<NicZone>> {
-        let service = service
-            .or(self.default_service.as_deref())
-            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-
-        let path = format!("services/{}/zones", service);
-        let response = self.get(&path).await?;
-
+    /// Parse NicZone list from XML response
+    fn parse_zones(&self, xml: &str) -> Result<Vec<NicZone>> {
         let mut zones = Vec::new();
-        let mut reader = Reader::from_str(&response);
+        let mut reader = Reader::from_str(xml);
         reader.trim_text(true);
 
         let mut buf = Vec::new();
@@ -395,6 +350,423 @@ impl DnsApi {
         Ok(zones)
     }
 
+    /// Parse NicZoneRevision list from XML response
+    fn parse_revisions(&self, xml: &str) -> Result<Vec<NicZoneRevision>> {
+        let mut revisions = Vec::new();
+        let mut reader = Reader::from_str(xml);
+        reader.trim_text(true);
+
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(e)) | Ok(Event::Start(e)) if e.name().as_ref() == b"revision" => {
+                    let mut date = String::new();
+                    let mut ip = String::new();
+                    let mut number: u32 = 0;
+
+                    for attr in e.attributes().flatten() {
+                        let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("").to_string();
+                        let value = attr.unescape_value().unwrap_or_default().to_string();
+                        match key.as_str() {
+                            "date" => date = value,
+                            "ip" => ip = value,
+                            "number" => number = value.parse().unwrap_or(0),
+                            _ => {}
+                        }
+                    }
+                    revisions.push(NicZoneRevision { date, ip, number });
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(revisions)
+    }
+
+    /// Parse a list of IP addresses from XML response (<ip> elements)
+    fn parse_ip_list(&self, xml: &str) -> Result<Vec<String>> {
+        let mut ips = Vec::new();
+        let mut reader = Reader::from_str(xml);
+        reader.trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_ip = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) if e.name().as_ref() == b"ip" => {
+                    in_ip = true;
+                }
+                Ok(Event::Text(e)) if in_ip => {
+                    ips.push(e.unescape().unwrap_or_default().to_string());
+                }
+                Ok(Event::End(e)) if e.name().as_ref() == b"ip" => {
+                    in_ip = false;
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(ips)
+    }
+
+    /// Parse TTL value from SOA XML response
+    fn parse_soa_ttl(&self, xml: &str) -> Result<u32> {
+        let mut reader = Reader::from_str(xml);
+        reader.trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut in_soa = false;
+        let mut in_ttl = false;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    match e.name().as_ref() {
+                        b"soa" => { in_soa = true; }
+                        b"ttl" if in_soa => { in_ttl = true; }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Text(e)) if in_ttl => {
+                    let text = e.unescape().unwrap_or_default();
+                    let ttl: u32 = text.parse().map_err(|_| {
+                        DnsApiError::ApiError(format!("Invalid TTL value: {}", text))
+                    })?;
+                    return Ok(ttl);
+                }
+                Ok(Event::End(e)) => {
+                    match e.name().as_ref() {
+                        b"ttl" => { in_ttl = false; }
+                        b"soa" => { in_soa = false; }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Err(DnsApiError::ApiError("No TTL found in SOA response".to_string()))
+    }
+
+    /// Get list of available services
+    pub async fn services(&self) -> Result<Vec<NicService>> {
+        let response = self.get("services").await?;
+        let data = self.extract_data(&response)?;
+        
+        let mut services = Vec::new();
+        let mut reader = Reader::from_str(&data);
+        reader.trim_text(true);
+        
+        let mut buf = Vec::new();
+        #[allow(unused_assignments)]
+        let mut current_element = String::new();
+        
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"service" => {
+                    // Capture the entire service element
+                    current_element = format!("<{}", String::from_utf8_lossy(e.name().as_ref()));
+                    for attr in e.attributes().flatten() {
+                        current_element.push_str(&format!(
+                            " {}=\"{}\"",
+                            String::from_utf8_lossy(attr.key.as_ref()),
+                            attr.unescape_value().unwrap()
+                        ));
+                    }
+                    current_element.push_str(" />");
+                    
+                    if let Ok(service) = NicService::from_xml(&current_element) {
+                        services.push(service);
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(DnsApiError::XmlError(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+        
+        Ok(services)
+    }
+
+    /// Get DNS zones for a service
+    pub async fn zones(&self, service: Option<&str>) -> Result<Vec<NicZone>> {
+        let service = service
+            .or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+
+        let path = format!("services/{}/zones", service);
+        let response = self.get(&path).await?;
+        self.parse_zones(&response)
+    }
+
+    /// List all zones across all services.
+    /// GET /dns-master/zones
+    pub async fn zones_all(&self) -> Result<Vec<NicZone>> {
+        let response = self.get("zones").await?;
+        self.parse_zones(&response)
+    }
+
+    /// Create a new DNS zone.
+    /// PUT /dns-master/services/{service}/zones/{zone_name}
+    pub async fn create_zone(
+        &self,
+        zone_name: &str,
+        service: Option<&str>,
+    ) -> Result<NicZone> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let path = format!("services/{}/zones/{}", service, zone_name);
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<request><zone name=\"{}\"/></request>",
+            zone_name
+        );
+        let response = self.put(&path, Some(&xml)).await?;
+        let zones = self.parse_zones(&response)?;
+        zones.into_iter().next()
+            .ok_or_else(|| DnsApiError::ApiError("No zone returned after creation".to_string()))
+    }
+
+    /// Delete a DNS zone.
+    /// DELETE /dns-master/services/{service}/zones/{zone_name}
+    pub async fn delete_zone(
+        &self,
+        zone_name: &str,
+        service: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let path = format!("services/{}/zones/{}", service, zone_name);
+        self.delete(&path).await?;
+        Ok(())
+    }
+
+    /// Move a zone to another service.
+    /// POST /dns-master/services/{service}/zones/{zone}/move?to={target_service}
+    pub async fn move_zone(
+        &self,
+        zone: Option<&str>,
+        target_service: &str,
+        service: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/move?to={}", service, zone, target_service);
+        self.post(&path, None).await?;
+        Ok(())
+    }
+
+    /// Export zone file in BIND format.
+    /// GET /dns-master/services/{service}/zones/{zone}/export
+    pub async fn zone_export(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<String> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/export", service, zone);
+        let url = self.url_for(&path);
+
+        // First attempt
+        let token = self.get_valid_token().await?;
+        let response = self.http_client.get(&url)
+            .bearer_auth(&token)
+            .send()
+            .await?;
+
+        // If we get 401/403, try refreshing token and retry
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN {
+            log::info!("Token expired during zone export, refreshing and retrying...");
+            self.refresh_token_internal().await?;
+            let new_token = self.get_valid_token().await?;
+            let response = self.http_client.get(&url)
+                .bearer_auth(&new_token)
+                .send()
+                .await?;
+            Ok(response.text().await?)
+        } else {
+            Ok(response.text().await?)
+        }
+    }
+
+    /// Import zone file in BIND format.
+    /// POST /dns-master/services/{service}/zones/{zone}/import
+    pub async fn zone_import(
+        &self,
+        content: &str,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/import", service, zone);
+        self.execute_with_retry(reqwest::Method::POST, &path, Some(content), "text/plain").await?;
+        Ok(())
+    }
+
+    /// Rollback uncommitted changes for a zone.
+    /// POST /dns-master/services/{service}/zones/{zone}/rollback
+    pub async fn rollback(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/rollback", service, zone);
+        self.post(&path, None).await?;
+        Ok(())
+    }
+
+    /// Get the default TTL for a zone (from SOA record).
+    /// GET /dns-master/services/{service}/zones/{zone}/soa
+    pub async fn get_default_ttl(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<u32> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/soa", service, zone);
+        let response = self.get(&path).await?;
+        self.parse_soa_ttl(&response)
+    }
+
+    /// Set the default TTL for a zone.
+    /// PUT /dns-master/services/{service}/zones/{zone}/soa
+    pub async fn set_default_ttl(
+        &self,
+        ttl: u32,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/soa", service, zone);
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<request><soa-list><soa><ttl>{}</ttl></soa></soa-list></request>",
+            ttl
+        );
+        self.put(&path, Some(&xml)).await?;
+        Ok(())
+    }
+
+    /// Get zone revision history.
+    /// GET /dns-master/services/{service}/zones/{zone}/revisions
+    pub async fn zone_revisions(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<Vec<NicZoneRevision>> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/revisions", service, zone);
+        let response = self.get(&path).await?;
+        self.parse_revisions(&response)
+    }
+
+    /// Get list of IP addresses allowed for zone transfer (AXFR).
+    /// GET /dns-master/services/{service}/zones/{zone}/axfr
+    pub async fn get_axfr_ips(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/axfr", service, zone);
+        let response = self.get(&path).await?;
+        self.parse_ip_list(&response)
+    }
+
+    /// Set list of IP addresses allowed for zone transfer (AXFR).
+    /// PUT /dns-master/services/{service}/zones/{zone}/axfr
+    pub async fn set_axfr_ips(
+        &self,
+        ips: &[&str],
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/axfr", service, zone);
+        let ip_xml: String = ips.iter().map(|ip| format!("<ip>{}</ip>", ip)).collect();
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<request><ip-list>{}</ip-list></request>",
+            ip_xml
+        );
+        self.put(&path, Some(&xml)).await?;
+        Ok(())
+    }
+
+    /// Get list of master DNS servers (for secondary zones).
+    /// GET /dns-master/services/{service}/zones/{zone}/masters
+    pub async fn get_masters(
+        &self,
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/masters", service, zone);
+        let response = self.get(&path).await?;
+        self.parse_ip_list(&response)
+    }
+
+    /// Set list of master DNS servers (for secondary zones).
+    /// PUT /dns-master/services/{service}/zones/{zone}/masters
+    pub async fn set_masters(
+        &self,
+        ips: &[&str],
+        service: Option<&str>,
+        zone: Option<&str>,
+    ) -> Result<()> {
+        let service = service.or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        let zone = zone.or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+        let path = format!("services/{}/zones/{}/masters", service, zone);
+        let ip_xml: String = ips.iter().map(|ip| format!("<ip>{}</ip>", ip)).collect();
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<request><ip-list>{}</ip-list></request>",
+            ip_xml
+        );
+        self.put(&path, Some(&xml)).await?;
+        Ok(())
+    }
+
     /// Commit changes to a DNS zone
     pub async fn commit(&self, service: Option<&str>, zone: Option<&str>) -> Result<()> {
         let service = service
@@ -410,21 +782,10 @@ impl DnsApi {
         Ok(())
     }
 
-    /// Get DNS records for a zone
-    pub async fn records(&self, service: Option<&str>, zone: Option<&str>) -> Result<Vec<DnsRecord>> {
-        let service = service
-            .or(self.default_service.as_deref())
-            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        
-        let zone = zone
-            .or(self.default_zone.as_deref())
-            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
-
-        let path = format!("services/{}/zones/{}/records", service, zone);
-        let response = self.get(&path).await?;
-
+    /// Parse DNS records from an XML response string containing `<rr>` elements.
+    fn parse_dns_records(&self, xml: &str) -> Result<Vec<DnsRecord>> {
         let mut records = Vec::new();
-        let mut reader = Reader::from_str(&response);
+        let mut reader = Reader::from_str(xml);
         reader.trim_text(true);
 
         let mut buf = Vec::new();
@@ -461,6 +822,48 @@ impl DnsApi {
         let mut in_srv_weight = false;
         let mut in_srv_port = false;
         let mut in_srv_target = false;
+        // SOA
+        let mut in_soa = false;
+        let mut rr_soa_mname = String::new();
+        let mut rr_soa_rname = String::new();
+        let mut rr_soa_serial: u32 = 0;
+        let mut rr_soa_refresh: u32 = 0;
+        let mut rr_soa_retry: u32 = 0;
+        let mut rr_soa_expire: u32 = 0;
+        let mut rr_soa_minimum: u32 = 0;
+        let mut in_soa_mname = false;
+        let mut in_soa_rname = false;
+        let mut in_soa_serial = false;
+        let mut in_soa_refresh = false;
+        let mut in_soa_retry = false;
+        let mut in_soa_expire = false;
+        let mut in_soa_minimum = false;
+        // HINFO
+        let mut in_hinfo = false;
+        let mut rr_hinfo_hardware = String::new();
+        let mut rr_hinfo_os = String::new();
+        let mut in_hinfo_hardware = false;
+        let mut in_hinfo_os = false;
+        // NAPTR
+        let mut in_naptr = false;
+        let mut rr_naptr_order: u16 = 0;
+        let mut rr_naptr_preference: u16 = 0;
+        let mut rr_naptr_flags = String::new();
+        let mut rr_naptr_service = String::new();
+        let mut rr_naptr_regexp: Option<String> = None;
+        let mut rr_naptr_replacement: Option<String> = None;
+        let mut in_naptr_order = false;
+        let mut in_naptr_preference = false;
+        let mut in_naptr_flags = false;
+        let mut in_naptr_service = false;
+        let mut in_naptr_regexp = false;
+        let mut in_naptr_replacement = false;
+        // RP
+        let mut in_rp = false;
+        let mut rr_rp_mbox = String::new();
+        let mut rr_rp_txt = String::new();
+        let mut in_rp_mbox = false;
+        let mut in_rp_txt = false;
         // Current simple text element tag
         let mut current_tag = String::new();
 
@@ -490,6 +893,18 @@ impl DnsApi {
                             rr_srv_target.clear();
                             in_mx = false;
                             in_srv = false;
+                            in_soa = false;
+                            rr_soa_mname.clear(); rr_soa_rname.clear();
+                            rr_soa_serial = 0; rr_soa_refresh = 0; rr_soa_retry = 0;
+                            rr_soa_expire = 0; rr_soa_minimum = 0;
+                            in_hinfo = false;
+                            rr_hinfo_hardware.clear(); rr_hinfo_os.clear();
+                            in_naptr = false;
+                            rr_naptr_order = 0; rr_naptr_preference = 0;
+                            rr_naptr_flags.clear(); rr_naptr_service.clear();
+                            rr_naptr_regexp = None; rr_naptr_replacement = None;
+                            in_rp = false;
+                            rr_rp_mbox.clear(); rr_rp_txt.clear();
                             // Parse id attribute if present
                             for attr in e.attributes().flatten() {
                                 if attr.key.as_ref() == b"id" {
@@ -507,6 +922,27 @@ impl DnsApi {
                         "weight" if in_srv => { in_srv_weight = true; }
                         "port" if in_srv => { in_srv_port = true; }
                         "target" if in_srv => { in_srv_target = true; }
+                        "soa" if in_rr => { in_soa = true; }
+                        "mname" if in_soa => { in_soa_mname = true; }
+                        "rname" if in_soa => { in_soa_rname = true; }
+                        "serial" if in_soa => { in_soa_serial = true; }
+                        "refresh" if in_soa => { in_soa_refresh = true; }
+                        "retry" if in_soa => { in_soa_retry = true; }
+                        "expire" if in_soa => { in_soa_expire = true; }
+                        "minimum" if in_soa => { in_soa_minimum = true; }
+                        "hinfo" if in_rr => { in_hinfo = true; }
+                        "hardware" if in_hinfo => { in_hinfo_hardware = true; }
+                        "os" if in_hinfo => { in_hinfo_os = true; }
+                        "naptr" if in_rr => { in_naptr = true; }
+                        "order" if in_naptr => { in_naptr_order = true; }
+                        "preference" if in_naptr => { in_naptr_preference = true; }
+                        "flags" if in_naptr => { in_naptr_flags = true; }
+                        "service" if in_naptr => { in_naptr_service = true; }
+                        "regexp" if in_naptr => { in_naptr_regexp = true; }
+                        "replacement" if in_naptr => { in_naptr_replacement = true; }
+                        "rp" if in_rr => { in_rp = true; }
+                        "mbox-dname" if in_rp => { in_rp_mbox = true; }
+                        "txt-dname" if in_rp => { in_rp_txt = true; }
                         other if in_rr => { current_tag = other.to_string(); }
                         _ => {}
                     }
@@ -542,6 +978,7 @@ impl DnsApi {
                                     id: rr_id,
                                     name: rr_name.clone(),
                                     idn_name: None,
+                                    ttl: rr_ttl,
                                     ns: rr_ns.clone(),
                                 })),
                                 "TXT" => Some(DnsRecord::TXT(TxtRecord {
@@ -583,6 +1020,47 @@ impl DnsApi {
                                     port: rr_srv_port,
                                     target: rr_srv_target.clone(),
                                 })),
+                                "SOA" => Some(DnsRecord::SOA(SoaRecord {
+                                    id: rr_id,
+                                    name: rr_name.clone(),
+                                    idn_name: None,
+                                    ttl: rr_ttl,
+                                    serial: rr_soa_serial,
+                                    refresh: rr_soa_refresh,
+                                    retry: rr_soa_retry,
+                                    expire: rr_soa_expire,
+                                    minimum: rr_soa_minimum,
+                                    mname: rr_soa_mname.clone(),
+                                    rname: rr_soa_rname.clone(),
+                                })),
+                                "HINFO" => Some(DnsRecord::HINFO(HinfoRecord {
+                                    id: rr_id,
+                                    name: rr_name.clone(),
+                                    idn_name: None,
+                                    ttl: rr_ttl,
+                                    hardware: rr_hinfo_hardware.clone(),
+                                    os: rr_hinfo_os.clone(),
+                                })),
+                                "NAPTR" => Some(DnsRecord::NAPTR(NaptrRecord {
+                                    id: rr_id,
+                                    name: rr_name.clone(),
+                                    idn_name: None,
+                                    ttl: rr_ttl,
+                                    order: rr_naptr_order,
+                                    preference: rr_naptr_preference,
+                                    flags: rr_naptr_flags.clone(),
+                                    service: rr_naptr_service.clone(),
+                                    regexp: rr_naptr_regexp.clone(),
+                                    replacement: rr_naptr_replacement.clone(),
+                                })),
+                                "RP" => Some(DnsRecord::RP(RpRecord {
+                                    id: rr_id,
+                                    name: rr_name.clone(),
+                                    idn_name: None,
+                                    ttl: rr_ttl,
+                                    mbox: rr_rp_mbox.clone(),
+                                    txt: rr_rp_txt.clone(),
+                                })),
                                 _ => None, // Unknown record type; skip
                             };
                             if let Some(r) = record {
@@ -592,12 +1070,33 @@ impl DnsApi {
                         "mx" => { in_mx = false; }
                         "srv" => { in_srv = false; }
                         "string" => { in_txt_string = false; }
-                        "preference" => { in_mx_preference = false; }
+                        "preference" if in_mx => { in_mx_preference = false; }
+                        "preference" if in_naptr => { in_naptr_preference = false; }
                         "exchange" => { in_mx_exchange = false; }
                         "priority" => { in_srv_priority = false; }
                         "weight" => { in_srv_weight = false; }
                         "port" => { in_srv_port = false; }
                         "target" => { in_srv_target = false; }
+                        "soa" => { in_soa = false; }
+                        "mname" => { in_soa_mname = false; }
+                        "rname" => { in_soa_rname = false; }
+                        "serial" => { in_soa_serial = false; }
+                        "refresh" => { in_soa_refresh = false; }
+                        "retry" => { in_soa_retry = false; }
+                        "expire" => { in_soa_expire = false; }
+                        "minimum" => { in_soa_minimum = false; }
+                        "hinfo" => { in_hinfo = false; }
+                        "hardware" => { in_hinfo_hardware = false; }
+                        "os" => { in_hinfo_os = false; }
+                        "naptr" => { in_naptr = false; }
+                        "order" if in_naptr => { in_naptr_order = false; }
+                        "flags" => { in_naptr_flags = false; }
+                        "service" if in_naptr => { in_naptr_service = false; }
+                        "regexp" => { in_naptr_regexp = false; }
+                        "replacement" => { in_naptr_replacement = false; }
+                        "rp" => { in_rp = false; }
+                        "mbox-dname" => { in_rp_mbox = false; }
+                        "txt-dname" => { in_rp_txt = false; }
                         _ => { current_tag.clear(); }
                     }
                 }
@@ -617,6 +1116,40 @@ impl DnsApi {
                         rr_srv_port = text.parse().unwrap_or(0);
                     } else if in_srv_target {
                         rr_srv_target = text;
+                    } else if in_soa_mname {
+                        rr_soa_mname = text;
+                    } else if in_soa_rname {
+                        rr_soa_rname = text;
+                    } else if in_soa_serial {
+                        rr_soa_serial = text.parse().unwrap_or(0);
+                    } else if in_soa_refresh {
+                        rr_soa_refresh = text.parse().unwrap_or(0);
+                    } else if in_soa_retry {
+                        rr_soa_retry = text.parse().unwrap_or(0);
+                    } else if in_soa_expire {
+                        rr_soa_expire = text.parse().unwrap_or(0);
+                    } else if in_soa_minimum {
+                        rr_soa_minimum = text.parse().unwrap_or(0);
+                    } else if in_hinfo_hardware {
+                        rr_hinfo_hardware = text;
+                    } else if in_hinfo_os {
+                        rr_hinfo_os = text;
+                    } else if in_naptr_order {
+                        rr_naptr_order = text.parse().unwrap_or(0);
+                    } else if in_naptr_preference {
+                        rr_naptr_preference = text.parse().unwrap_or(0);
+                    } else if in_naptr_flags {
+                        rr_naptr_flags = text;
+                    } else if in_naptr_service {
+                        rr_naptr_service = text;
+                    } else if in_naptr_regexp {
+                        rr_naptr_regexp = Some(text);
+                    } else if in_naptr_replacement {
+                        rr_naptr_replacement = Some(text);
+                    } else if in_rp_mbox {
+                        rr_rp_mbox = text;
+                    } else if in_rp_txt {
+                        rr_rp_txt = text;
                     } else {
                         match current_tag.as_str() {
                             "name" => rr_name = text,
@@ -640,6 +1173,23 @@ impl DnsApi {
         }
 
         Ok(records)
+    }
+
+    /// Get DNS records for a zone.
+    /// GET /dns-master/services/{service}/zones/{zone}/records
+    pub async fn records(&self, service: Option<&str>, zone: Option<&str>) -> Result<Vec<DnsRecord>> {
+        let service = service
+            .or(self.default_service.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
+        
+        let zone = zone
+            .or(self.default_zone.as_deref())
+            .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
+
+        let path = format!("services/{}/zones/{}/records", service, zone);
+        let response = self.get(&path).await?;
+
+        self.parse_dns_records(&response)
     }
 
     /// Add DNS record(s) to a zone
@@ -669,11 +1219,9 @@ impl DnsApi {
         );
 
         let path = format!("services/{}/zones/{}/records", service, zone);
-        let _response = self.put(&path, Some(&xml)).await?;
-        
-        // Parse response and return created records
-        // Simplified - full implementation would parse XML
-        Ok(Vec::new())
+        let response = self.put(&path, Some(&xml)).await?;
+
+        self.parse_dns_records(&response)
     }
 
     /// Delete a DNS record by ID
@@ -708,8 +1256,12 @@ mod tests {
             expires_in: Some(3600),
             refresh_token: Some("refresh".to_string()),
             scope: Some("test".to_string()),
+            issued_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
         };
-        DnsApi::new("app_login", "app_password", Some(token), None, None)
+        DnsApi::new("app_login", "app_password", Some(token), None, None, None, None)
     }
 
     #[test]
@@ -718,14 +1270,17 @@ mod tests {
         assert_eq!(api.base_url, "https://api.nic.ru");
         assert_eq!(api.default_service, None);
         assert_eq!(api.default_zone, None);
-        assert_eq!(api.token_manager.access_token(), Some("test_token"));
+        // Check token is stored via try_lock (no async runtime needed)
+        let tm = api.token_manager.try_lock().unwrap();
+        assert_eq!(tm.access_token(), Some("test_token"));
     }
 
     #[test]
     fn dns_api_new_custom_params() {
-        let api = DnsApi::new("login", "pass", None, Some(7200), Some("custom_scope".to_string()));
+        let api = DnsApi::new("login", "pass", None, Some(7200), Some("custom_scope".to_string()), None, None);
         assert_eq!(api.base_url, "https://api.nic.ru");
-        assert_eq!(api.token_manager.access_token(), None);
+        let tm = api.token_manager.try_lock().unwrap();
+        assert_eq!(tm.access_token(), None);
     }
 
     #[test]
@@ -743,6 +1298,15 @@ mod tests {
         let api = create_test_api();
         let xml = "<response><status>success</status></response>";
         assert!(api.check_response(xml).is_ok());
+    }
+
+    #[test]
+    fn check_response_non_xml_errors() {
+        let api = create_test_api();
+        // Non-XML content (e.g. BIND zone file) should now return XmlError in strict mode.
+        // zone_export bypasses check_response entirely.
+        let bind_data = "$ORIGIN example.com.\n@ 3600 IN SOA ns1. admin. 1 3600 900 604800 300";
+        assert!(matches!(api.check_response(bind_data), Err(DnsApiError::XmlError(_))));
     }
 
     #[test]
@@ -825,5 +1389,42 @@ mod tests {
         let xml = "<response><status>success</status></response>";
         let data = api.extract_data(xml).unwrap();
         assert_eq!(data, "");
+    }
+
+    #[test]
+    fn parse_zones_from_xml() {
+        let api = create_test_api();
+        let xml = r#"<response><status>success</status><data><zone admin="admin" enable="true" has-changes="false" has-primary="true" id="1" idn-name="example.com" name="example.com" payer="payer" service="mysvc" /></data></response>"#;
+        let zones = api.parse_zones(xml).unwrap();
+        assert_eq!(zones.len(), 1);
+        assert_eq!(zones[0].name, "example.com");
+        assert_eq!(zones[0].service, "mysvc");
+    }
+
+    #[test]
+    fn parse_revisions_from_xml() {
+        let api = create_test_api();
+        let xml = r#"<response><status>success</status><data><revision date="2023-01-01" ip="1.2.3.4" number="42" /></data></response>"#;
+        let revisions = api.parse_revisions(xml).unwrap();
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(revisions[0].date, "2023-01-01");
+        assert_eq!(revisions[0].ip, "1.2.3.4");
+        assert_eq!(revisions[0].number, 42);
+    }
+
+    #[test]
+    fn parse_ip_list_from_xml() {
+        let api = create_test_api();
+        let xml = r#"<response><status>success</status><data><ip-list><ip>1.2.3.4</ip><ip>5.6.7.8</ip></ip-list></data></response>"#;
+        let ips = api.parse_ip_list(xml).unwrap();
+        assert_eq!(ips, vec!["1.2.3.4", "5.6.7.8"]);
+    }
+
+    #[test]
+    fn parse_soa_ttl_from_xml() {
+        let api = create_test_api();
+        let xml = r#"<response><status>success</status><data><soa><ttl>3600</ttl></soa></data></response>"#;
+        let ttl = api.parse_soa_ttl(xml).unwrap();
+        assert_eq!(ttl, 3600);
     }
 }

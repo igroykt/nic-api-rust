@@ -865,6 +865,7 @@ pub struct NsRecord {
     pub id: Option<u64>,
     pub name: String,
     pub idn_name: Option<String>,
+    pub ttl: Option<u32>,
     pub ns: String,
 }
 
@@ -937,6 +938,7 @@ pub struct SoaRecord {
     pub id: Option<u64>,
     pub name: String,
     pub idn_name: Option<String>,
+    pub ttl: Option<u32>,
     pub serial: u32,
     pub refresh: u32,
     pub retry: u32,
@@ -1184,8 +1186,17 @@ impl NsRecord {
             id: None,
             name: name.into(),
             idn_name: None,
+            ttl: None,
             ns: ns.into(),
         }
+    }
+
+    pub fn with_ttl(mut self, ttl: u32) -> Result<Self> {
+        if ttl == 0 {
+            return Err(DnsApiError::InvalidTtl);
+        }
+        self.ttl = Some(ttl);
+        Ok(self)
     }
 
     pub fn to_xml(&self) -> Result<String> {
@@ -1200,6 +1211,12 @@ impl NsRecord {
         writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.name)))?;
         writer.write_event(Event::End(BytesEnd::new("name")))?;
+
+        if let Some(ttl) = self.ttl {
+            writer.write_event(Event::Start(BytesStart::new("ttl")))?;
+            writer.write_event(Event::Text(BytesText::new(&ttl.to_string())))?;
+            writer.write_event(Event::End(BytesEnd::new("ttl")))?;
+        }
 
         writer.write_event(Event::Start(BytesStart::new("type")))?;
         writer.write_event(Event::Text(BytesText::new("NS")))?;
@@ -1232,6 +1249,7 @@ impl SoaRecord {
             id: None,
             name: name.into(),
             idn_name: None,
+            ttl: None,
             serial,
             refresh,
             retry,
@@ -1240,6 +1258,14 @@ impl SoaRecord {
             mname: mname.into(),
             rname: rname.into(),
         }
+    }
+
+    pub fn with_ttl(mut self, ttl: u32) -> Result<Self> {
+        if ttl == 0 {
+            return Err(DnsApiError::InvalidTtl);
+        }
+        self.ttl = Some(ttl);
+        Ok(self)
     }
 
     pub fn to_xml(&self) -> Result<String> {
@@ -1254,6 +1280,12 @@ impl SoaRecord {
         writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.name)))?;
         writer.write_event(Event::End(BytesEnd::new("name")))?;
+
+        if let Some(ttl) = self.ttl {
+            writer.write_event(Event::Start(BytesStart::new("ttl")))?;
+            writer.write_event(Event::Text(BytesText::new(&ttl.to_string())))?;
+            writer.write_event(Event::End(BytesEnd::new("ttl")))?;
+        }
 
         writer.write_event(Event::Start(BytesStart::new("type")))?;
         writer.write_event(Event::Text(BytesText::new("SOA")))?;

@@ -4,8 +4,17 @@ use oauth2::{
     TokenUrl, RefreshToken,
 };
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{DnsApiError, Result};
+
+/// Returns the current time as seconds since the UNIX epoch.
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// OAuth2 token information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,14 +24,27 @@ pub struct Token {
     pub expires_in: Option<u64>,
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
+    /// UNIX timestamp (seconds) when this token was issued.
+    /// Defaults to 0 when deserialising tokens that pre-date this field,
+    /// which causes them to be treated as expired (safe default).
+    #[serde(default)]
+    pub issued_at: u64,
 }
 
 impl Token {
-    /// Check if token is likely expired (simple heuristic)
+    /// Returns `true` when the token has expired or is within 30 seconds of
+    /// expiring (to account for clock skew and network latency).
     pub fn is_expired(&self) -> bool {
-        // In a real implementation, you'd track the creation time
-        // and compare with expires_in
-        false
+        const BUFFER_SECS: u64 = 30;
+        match self.expires_in {
+            Some(expires_in) => {
+                let now = current_unix_secs();
+                // Use saturating_sub to avoid underflow when expires_in < BUFFER_SECS.
+                now >= self.issued_at + expires_in.saturating_sub(BUFFER_SECS)
+            }
+            // No expiry information → assume the token is still valid.
+            None => false,
+        }
     }
 }
 
@@ -73,6 +95,11 @@ impl TokenManager {
         self.token.as_ref()
     }
 
+    /// Get current token (alias for get_token)
+    pub fn token(&self) -> Option<&Token> {
+        self.token.as_ref()
+    }
+
     /// Get access token string
     pub fn access_token(&self) -> Option<&str> {
         self.token.as_ref().map(|t| t.access_token.as_str())
@@ -108,6 +135,7 @@ impl TokenManager {
                         .collect::<Vec<_>>()
                         .join(" ")
                 }),
+            issued_at: current_unix_secs(),
         };
 
         log::debug!("Token scope: {:?}", token.scope);
@@ -120,6 +148,28 @@ impl TokenManager {
     pub fn base_url_for_test(&self) -> String {
         // helper so tests can check TokenManager was constructed
         "ok".to_string()
+    }
+
+    /// Ensures we have a valid (non-expired) access token.
+    /// If the current token is expired but we have a refresh token, auto-refreshes.
+    /// Returns the access token string.
+    pub async fn ensure_valid_token(&mut self) -> crate::Result<String> {
+        match &self.token {
+            Some(token) if !token.is_expired() => {
+                Ok(token.access_token.clone())
+            }
+            Some(Token { refresh_token: Some(ref rt), .. }) => {
+                let refresh_token = rt.clone();
+                log::info!("Token expired, auto-refreshing...");
+                self.refresh_token(&refresh_token).await?;
+                self.token
+                    .as_ref()
+                    .map(|t| t.access_token.clone())
+                    .ok_or_else(|| crate::DnsApiError::OAuth2Error("Token refresh failed".to_string()))
+            }
+            Some(_) => Err(crate::DnsApiError::ExpiredToken),
+            None => Err(crate::DnsApiError::OAuth2Error("No access token available".to_string())),
+        }
     }
 
     /// Refresh an existing token
@@ -147,6 +197,7 @@ impl TokenManager {
                         .collect::<Vec<_>>()
                         .join(" ")
                 }),
+            issued_at: current_unix_secs(),
         };
 
         self.token = Some(token.clone());
@@ -165,6 +216,7 @@ mod tests {
             expires_in: Some(3600),
             refresh_token: Some("test_refresh".to_string()),
             scope: Some("dns".to_string()),
+            issued_at: current_unix_secs(),
         }
     }
 
@@ -178,12 +230,46 @@ mod tests {
         assert_eq!(deserialized.expires_in, Some(3600));
         assert_eq!(deserialized.refresh_token, Some("test_refresh".to_string()));
         assert_eq!(deserialized.scope, Some("dns".to_string()));
+        assert!(deserialized.issued_at > 0);
     }
 
     #[test]
-    fn token_is_expired_returns_false() {
-        // stub always returns false
+    fn token_is_not_expired_when_fresh() {
+        // A token issued right now with a 1-hour TTL must not be expired.
         assert!(!sample_token().is_expired());
+    }
+
+    #[test]
+    fn token_is_expired_when_old() {
+        // A token issued 2 hours ago with a 1-hour TTL must be expired.
+        let token = Token {
+            issued_at: current_unix_secs() - 7200,
+            expires_in: Some(3600),
+            ..sample_token()
+        };
+        assert!(token.is_expired());
+    }
+
+    #[test]
+    fn token_is_expired_within_buffer() {
+        // A token that expires in 10 seconds (< 30 s buffer) must be treated as expired.
+        let token = Token {
+            issued_at: current_unix_secs() - 3590,
+            expires_in: Some(3600),
+            ..sample_token()
+        };
+        assert!(token.is_expired());
+    }
+
+    #[test]
+    fn token_no_expiry_is_never_expired() {
+        // A token without expiry information should never be considered expired.
+        let token = Token {
+            expires_in: None,
+            issued_at: 0, // worst-case issued_at
+            ..sample_token()
+        };
+        assert!(!token.is_expired());
     }
 
     #[test]

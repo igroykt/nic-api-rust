@@ -28,6 +28,8 @@
 //!         None,  // No existing token
 //!         None,  // Use default offline duration
 //!         None,  // Use default scope
+//!         None,  // No default service
+//!         None,  // No default zone
 //!     );
 //!
 //!     // Authenticate
