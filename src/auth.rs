@@ -54,7 +54,6 @@ pub struct TokenManager {
     token: Option<Token>,
     #[allow(dead_code)]
     offline: u64,
-    #[allow(dead_code)]
     scope: String,
 }
 
@@ -117,6 +116,7 @@ impl TokenManager {
                 &ResourceOwnerUsername::new(username.into()),
                 &ResourceOwnerPassword::new(password.into()),
             )
+            .add_scope(oauth2::Scope::new(self.scope.clone()))
             .request_async(oauth2::reqwest::async_http_client)
             .await
             .map_err(|e| DnsApiError::OAuth2Error(e.to_string()))?;
@@ -179,6 +179,7 @@ impl TokenManager {
         let token_result = self
             .oauth_client
             .exchange_refresh_token(&refresh_token)
+            .add_scope(oauth2::Scope::new(self.scope.clone()))
             .request_async(oauth2::reqwest::async_http_client)
             .await
             .map_err(|e| DnsApiError::OAuth2Error(e.to_string()))?;
