@@ -47,19 +47,19 @@ async fn main() {
         .expect("NIC_USERNAME environment variable must be set");
     let password = env::var("NIC_PASSWORD")
         .expect("NIC_PASSWORD environment variable must be set");
-    let default_service = env::var("NIC_SERVICE_ID").ok();
-    let default_zone = env::var("NIC_ZONE").ok();
+    let service_id = env::var("NIC_SERVICE_ID").ok();
+    let zone = env::var("NIC_ZONE").ok();
 
     // Create the DnsApi client. The last five parameters are:
     //   token           — a previously saved Token (None means we'll fetch one below)
     //   offline         — offline access duration in seconds (None = default)
     //   scope           — OAuth2 scope override (None = default)
-    //   default_service — NIC_SERVICE_ID to use as fallback for DNS operations
-    //   default_zone    — zone name to use as fallback for DNS operations
+    //   service_id — NIC_SERVICE_ID to use as fallback for DNS operations
+    //   zone    — zone name to use as fallback for DNS operations
     //
     // Note: `get_token()` and `refresh_token()` take `&self` (not `&mut self`),
     // so the api binding does not need to be mutable for auth operations.
-    let api = DnsApi::new(app_login, app_password, None, None, None, default_service, default_zone);
+    let api = DnsApi::new(app_login, app_password, None, None, None, service_id, zone);
 
     // -------------------------------------------------------------------------
     // AUTO-RETRY ON TOKEN EXPIRY
@@ -95,13 +95,13 @@ async fn main() {
     // -------------------------------------------------------------------------
     // 2. SETTING DEFAULTS
     // -------------------------------------------------------------------------
-    // DnsApi uses default_service and default_zone as fallbacks when None is
+    // DnsApi uses service_id and zone as fallbacks when None is
     // passed to zone/record methods. They can be provided at construction time
     // via the NIC_SERVICE_ID and NIC_ZONE environment variables (read above),
     // or set/overridden after construction using the setter methods:
     //
-    // api.set_default_service("MY_SERVICE");   // requires &mut api
-    // api.set_default_zone("example.com");     // requires &mut api
+    // api.set_service_id("MY_SERVICE");   // requires &mut api
+    // api.set_zone("example.com");     // requires &mut api
     //
     // For this example the values from environment variables are used when set,
     // otherwise explicit values are passed to each method call below.
@@ -179,8 +179,8 @@ async fn main() {
     // -------------------------------------------------------------------------
     // 5. LISTING RECORDS
     // -------------------------------------------------------------------------
-    // Both the service and zone filters default to api.default_service /
-    // api.default_zone when None is passed. Here both are None so all records
+    // Both the service and zone filters default to api.service_id /
+    // api.zone when None is passed. Here both are None so all records
     // visible to the account are returned (subject to server-side limits).
     println!("\n=== DNS Records ===");
     match api.records(None, None).await {

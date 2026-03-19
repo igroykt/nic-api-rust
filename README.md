@@ -66,7 +66,7 @@ async fn main() -> nic_api_rust::Result<()> {
         println!("Сервис: {}", svc.name);
     }
 
-    // 4. Список зон (фильтр по сервису — или None для default_service)
+    // 4. Список зон (фильтр по сервису — или None для service_id)
     let zones = api.zones(None).await?;
     for zone in &zones {
         println!("Зона: {}", zone.name);
@@ -236,8 +236,8 @@ api.set_masters(&["192.0.2.10", "198.51.100.20"], Some("MY_SERVICE"), Some("exam
 
 ```rust
 pub struct DnsApi {
-    pub default_service: Option<String>,
-    pub default_zone: Option<String>,
+    pub service_id: Option<String>,
+    pub zone: Option<String>,
     // ...
 }
 ```
@@ -251,8 +251,8 @@ DnsApi::new(
     token: Option<Token>,
     offline: Option<u64>,
     scope: Option<String>,
-    default_service: Option<String>,
-    default_zone: Option<String>,
+    service_id: Option<String>,
+    zone: Option<String>,
 ) -> Self
 ```
 
@@ -263,8 +263,8 @@ DnsApi::new(
 | `token` | Существующий `Token` для возобновления сессии |
 | `offline` | TTL refresh-токена в секундах (`Some(...)`) или `None` для отключения офлайн-доступа |
 | `scope` | Строка области OAuth2 (например, `"/.+/"`) или `None` для значения по умолчанию |
-| `default_service` | (опционально) Идентификатор DNS-сервиса по умолчанию — **обязателен для DNS-операций**, если не передаётся при каждом вызове. Задаётся через переменную окружения `NIC_SERVICE_ID` в примерах. |
-| `default_zone` | (опционально) Имя DNS-зоны по умолчанию. Задаётся через переменную окружения `NIC_ZONE` в примерах. |
+| `service_id` | (опционально) Идентификатор DNS-сервиса по умолчанию — **обязателен для DNS-операций**, если не передаётся при каждом вызове. Задаётся через переменную окружения `NIC_SERVICE_ID` в примерах. |
+| `zone` | (опционально) Имя DNS-зоны по умолчанию. Задаётся через переменную окружения `NIC_ZONE` в примерах. |
 
 #### Методы
 
@@ -275,7 +275,7 @@ DnsApi::new(
 | `token() -> Option<Token>` | Получение текущего токена (если установлен) |
 | `set_token(token)` | Установка токена напрямую |
 | `services() -> Result<Vec<NicService>>` | Список всех DNS-сервисов, доступных аккаунту |
-| `zones(service) -> Result<Vec<NicZone>>` | Список зон сервиса (None = default_service) |
+| `zones(service) -> Result<Vec<NicZone>>` | Список зон сервиса (None = service_id) |
 | `zones_all() -> Result<Vec<NicZone>>` | Список всех зон по всем сервисам (`GET /dns-master/zones`) |
 | `create_zone(zone_name, service) -> Result<NicZone>` | Создание новой DNS-зоны |
 | `delete_zone(zone_name, service) -> Result<()>` | Удаление DNS-зоны |
@@ -294,12 +294,12 @@ DnsApi::new(
 | `add_record(records, service, zone) -> Result<Vec<DnsRecord>>` | Добавление одной или нескольких DNS-записей |
 | `delete_record(record_id, service, zone) -> Result<()>` | Удаление DNS-записи по её числовому ID |
 | `commit(service, zone) -> Result<()>` | Применение ожидающих изменений в зоне |
-| `set_default_service(service: impl Into<String>)` | Установка DNS-сервиса по умолчанию (`&mut self`) |
-| `set_default_zone(zone: impl Into<String>)` | Установка DNS-зоны по умолчанию (`&mut self`) |
+| `set_service_id(service: impl Into<String>)` | Установка DNS-сервиса по умолчанию (`&mut self`) |
+| `set_zone(zone: impl Into<String>)` | Установка DNS-зоны по умолчанию (`&mut self`) |
 
-Для методов `zones()`, `records()`, `add_record()`, `delete_record()`, `commit()` и всех новых методов управления зонами передача `None` для `service` или `zone` приведёт к использованию `default_service` / `default_zone` соответственно.
+Для методов `zones()`, `records()`, `add_record()`, `delete_record()`, `commit()` и всех новых методов управления зонами передача `None` для `service` или `zone` приведёт к использованию `service_id` / `zone` соответственно.
 
-> **Важно:** `default_service` (также читается из переменной окружения `NIC_SERVICE_ID` в примерах) **обязателен** для всех DNS-операций — `records()`, `add_record()`, `delete_record()`, `commit()` и `zones()`. Без него имя сервиса необходимо передавать явно при каждом вызове. `default_zone` (читается из `NIC_ZONE`) аналогично обязателен для операций на уровне записей.
+> **Важно:** `service_id` (также читается из переменной окружения `NIC_SERVICE_ID` в примерах) **обязателен** для всех DNS-операций — `records()`, `add_record()`, `delete_record()`, `commit()` и `zones()`. Без него имя сервиса необходимо передавать явно при каждом вызове. `zone` (читается из `NIC_ZONE`) аналогично обязателен для операций на уровне записей.
 
 ---
 

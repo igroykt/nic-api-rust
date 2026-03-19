@@ -15,8 +15,8 @@ pub struct DnsApi {
     http_client: reqwest::Client,
     base_url: String,
     token_manager: Mutex<TokenManager>,
-    pub default_service: Option<String>,
-    pub default_zone: Option<String>,
+    pub service_id: Option<String>,
+    pub zone: Option<String>,
 }
 
 impl DnsApi {
@@ -29,16 +29,16 @@ impl DnsApi {
     /// * `token` - Optional existing OAuth token
     /// * `offline` - Token lifetime in seconds (default: 3600)
     /// * `scope` - OAuth scope (default: ".+:/dns-master/.+")
-    /// * `default_service` - Optional default service name (NIC_SERVICE_ID)
-    /// * `default_zone` - Optional default zone name
+    /// * `service_id` - Optional default service name (NIC_SERVICE_ID)
+    /// * `zone` - Optional default zone name
     pub fn new(
         app_login: impl Into<String>,
         app_password: impl Into<String>,
         token: Option<Token>,
         offline: Option<u64>,
         scope: Option<String>,
-        default_service: Option<String>,
-        default_zone: Option<String>,
+        service_id: Option<String>,
+        zone: Option<String>,
     ) -> Self {
         let base_url = "https://api.nic.ru".to_string();
         let offline = offline.unwrap_or(3600);
@@ -60,19 +60,19 @@ impl DnsApi {
             http_client: reqwest::Client::new(),
             base_url,
             token_manager: Mutex::new(token_manager),
-            default_service,
-            default_zone,
+            service_id,
+            zone,
         }
     }
 
     /// Sets the default service name (NIC_SERVICE_ID) for DNS operations.
-    pub fn set_default_service(&mut self, service: impl Into<String>) {
-        self.default_service = Some(service.into());
+    pub fn set_service_id(&mut self, service: impl Into<String>) {
+        self.service_id = Some(service.into());
     }
 
     /// Sets the default zone name for DNS operations.
-    pub fn set_default_zone(&mut self, zone: impl Into<String>) {
-        self.default_zone = Some(zone.into());
+    pub fn set_zone(&mut self, zone: impl Into<String>) {
+        self.zone = Some(zone.into());
     }
 
     /// Get OAuth token using username and password
@@ -503,7 +503,7 @@ impl DnsApi {
     /// Get DNS zones for a service
     pub async fn zones(&self, service: Option<&str>) -> Result<Vec<NicZone>> {
         let service = service
-            .or(self.default_service.as_deref())
+            .or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
 
         let path = format!("services/{}/zones", service);
@@ -525,7 +525,7 @@ impl DnsApi {
         zone_name: &str,
         service: Option<&str>,
     ) -> Result<NicZone> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         let path = format!("services/{}/zones/{}", service, zone_name);
         let xml = format!(
@@ -545,7 +545,7 @@ impl DnsApi {
         zone_name: &str,
         service: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         let path = format!("services/{}/zones/{}", service, zone_name);
         self.delete(&path).await?;
@@ -560,9 +560,9 @@ impl DnsApi {
         target_service: &str,
         service: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/move?to={}", service, zone, target_service);
         self.post(&path, None).await?;
@@ -576,9 +576,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<String> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/export", service, zone);
         let url = self.url_for(&path);
@@ -613,9 +613,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/import", service, zone);
         self.execute_with_retry(reqwest::Method::POST, &path, Some(content), "text/plain").await?;
@@ -629,9 +629,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/rollback", service, zone);
         self.post(&path, None).await?;
@@ -645,9 +645,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<u32> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/soa", service, zone);
         let response = self.get(&path).await?;
@@ -662,9 +662,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/soa", service, zone);
         let xml = format!(
@@ -682,9 +682,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<Vec<NicZoneRevision>> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/revisions", service, zone);
         let response = self.get(&path).await?;
@@ -698,9 +698,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<Vec<String>> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/axfr", service, zone);
         let response = self.get(&path).await?;
@@ -715,9 +715,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/axfr", service, zone);
         let ip_xml: String = ips.iter().map(|ip| format!("<ip>{}</ip>", ip)).collect();
@@ -736,9 +736,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<Vec<String>> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/masters", service, zone);
         let response = self.get(&path).await?;
@@ -753,9 +753,9 @@ impl DnsApi {
         service: Option<&str>,
         zone: Option<&str>,
     ) -> Result<()> {
-        let service = service.or(self.default_service.as_deref())
+        let service = service.or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
-        let zone = zone.or(self.default_zone.as_deref())
+        let zone = zone.or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
         let path = format!("services/{}/zones/{}/masters", service, zone);
         let ip_xml: String = ips.iter().map(|ip| format!("<ip>{}</ip>", ip)).collect();
@@ -770,11 +770,11 @@ impl DnsApi {
     /// Commit changes to a DNS zone
     pub async fn commit(&self, service: Option<&str>, zone: Option<&str>) -> Result<()> {
         let service = service
-            .or(self.default_service.as_deref())
+            .or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         
         let zone = zone
-            .or(self.default_zone.as_deref())
+            .or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
 
         let path = format!("services/{}/zones/{}/commit", service, zone);
@@ -1179,11 +1179,11 @@ impl DnsApi {
     /// GET /dns-master/services/{service}/zones/{zone}/records
     pub async fn records(&self, service: Option<&str>, zone: Option<&str>) -> Result<Vec<DnsRecord>> {
         let service = service
-            .or(self.default_service.as_deref())
+            .or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         
         let zone = zone
-            .or(self.default_zone.as_deref())
+            .or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
 
         let path = format!("services/{}/zones/{}/records", service, zone);
@@ -1200,11 +1200,11 @@ impl DnsApi {
         zone: Option<&str>,
     ) -> Result<Vec<DnsRecord>> {
         let service = service
-            .or(self.default_service.as_deref())
+            .or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         
         let zone = zone
-            .or(self.default_zone.as_deref())
+            .or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
 
         // Build XML request
@@ -1232,11 +1232,11 @@ impl DnsApi {
         zone: Option<&str>,
     ) -> Result<()> {
         let service = service
-            .or(self.default_service.as_deref())
+            .or(self.service_id.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No service specified".to_string()))?;
         
         let zone = zone
-            .or(self.default_zone.as_deref())
+            .or(self.zone.as_deref())
             .ok_or_else(|| DnsApiError::ApiError("No zone specified".to_string()))?;
 
         let path = format!("services/{}/zones/{}/records/{}", service, zone, record_id);
@@ -1268,8 +1268,8 @@ mod tests {
     fn dns_api_new_default_params() {
         let api = create_test_api();
         assert_eq!(api.base_url, "https://api.nic.ru");
-        assert_eq!(api.default_service, None);
-        assert_eq!(api.default_zone, None);
+        assert_eq!(api.service_id, None);
+        assert_eq!(api.zone, None);
         // Check token is stored via try_lock (no async runtime needed)
         let tm = api.token_manager.try_lock().unwrap();
         assert_eq!(tm.access_token(), Some("test_token"));

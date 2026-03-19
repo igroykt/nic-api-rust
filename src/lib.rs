@@ -36,8 +36,8 @@
 //!     api.get_token("your_username", "your_password").await?;
 //!
 //!     // Set default service and zone
-//!     api.default_service = Some("MY_SERVICE".to_string());
-//!     api.default_zone = Some("example.com".to_string());
+//!     api.service_id = Some("MY_SERVICE".to_string());
+//!     api.zone = Some("example.com".to_string());
 //!
 //!     // Get services
 //!     let services = api.services().await?;
