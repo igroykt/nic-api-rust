@@ -201,29 +201,33 @@ impl DnsApi {
         let mut status = String::new();
         let mut error_code: Option<i32> = None;
         let mut error_text = String::new();
+        let mut has_xml_tags = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => match e.name().as_ref() {
-                    b"status" => {
-                        if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                            status = t.unescape().unwrap_or_default().to_string();
-                        }
-                    }
-                    b"error" => {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"code" {
-                                if let Ok(value) = attr.unescape_value() {
-                                    error_code = value.parse().ok();
-                                }
+                Ok(Event::Start(e)) => {
+                    has_xml_tags = true;
+                    match e.name().as_ref() {
+                        b"status" => {
+                            if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                                status = t.unescape().unwrap_or_default().to_string();
                             }
                         }
-                        if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                            error_text = t.unescape().unwrap_or_default().to_string();
+                        b"error" => {
+                            for attr in e.attributes().flatten() {
+                                if attr.key.as_ref() == b"code" {
+                                    if let Ok(value) = attr.unescape_value() {
+                                        error_code = value.parse().ok();
+                                    }
+                                }
+                            }
+                            if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
+                                error_text = t.unescape().unwrap_or_default().to_string();
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 Ok(Event::Eof) => break,
                 Err(e) => {
                     return Err(DnsApiError::XmlError(e.to_string()));
@@ -231,6 +235,10 @@ impl DnsApi {
                 _ => {}
             }
             buf.clear();
+        }
+
+        if !has_xml_tags {
+            return Err(DnsApiError::XmlError("Response is not valid XML".to_string()));
         }
 
         if status != "success" {
@@ -1214,7 +1222,7 @@ impl DnsApi {
         }
 
         let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8" ?><request><rr-list>{}</rr-list></request>"#,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<request><rr-list>{}</rr-list></request>",
             rr_list
         );
 

@@ -1,1 +1,7 @@
 target/
+tests/
+test_*.rs
+src/bin
+API_DNS-hosting.pdf
+nic-api.pdf
+*.txt

@@ -156,7 +156,9 @@ mod tests {
     #[test]
     fn cname_record_with_ttl_zero_err() {
         assert!(matches!(
-            CnameRecord::new("www", "example.com.").with_ttl(0).unwrap_err(),
+            CnameRecord::new("www", "example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
@@ -165,7 +167,7 @@ mod tests {
     fn cname_record_to_xml() {
         let xml = CnameRecord::new("www", "example.com.").to_xml().unwrap();
         assert!(xml.contains("<type>CNAME</type>"));
-        assert!(xml.contains("<cname>example.com.</cname>"));
+        assert!(xml.contains("<cname><name>example.com.</name></cname>"));
     }
 
     // ── MxRecord ──────────────────────────────────────────────────────────────
@@ -181,17 +183,21 @@ mod tests {
     #[test]
     fn mx_record_with_ttl_zero_err() {
         assert!(matches!(
-            MxRecord::new("@", 10, "mail.example.com.").with_ttl(0).unwrap_err(),
+            MxRecord::new("@", 10, "mail.example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
 
     #[test]
     fn mx_record_to_xml() {
-        let xml = MxRecord::new("@", 10, "mail.example.com.").to_xml().unwrap();
+        let xml = MxRecord::new("@", 10, "mail.example.com.")
+            .to_xml()
+            .unwrap();
         assert!(xml.contains("<type>MX</type>"));
         assert!(xml.contains("<preference>10</preference>"));
-        assert!(xml.contains("<exchange>mail.example.com.</exchange>"));
+        assert!(xml.contains("<exchange><name>mail.example.com.</name></exchange>"));
     }
 
     // ── NsRecord ──────────────────────────────────────────────────────────────
@@ -209,7 +215,7 @@ mod tests {
     fn ns_record_to_xml() {
         let xml = NsRecord::new("@", "ns1.example.com.").to_xml().unwrap();
         assert!(xml.contains("<type>NS</type>"));
-        assert!(xml.contains("<ns>ns1.example.com.</ns>"));
+        assert!(xml.contains("<ns><name>ns1.example.com.</name></ns>"));
     }
 
     // ── TxtRecord ─────────────────────────────────────────────────────────────
@@ -242,7 +248,16 @@ mod tests {
 
     #[test]
     fn soa_record_new() {
-        let r = SoaRecord::new("@", "ns1.example.com.", "admin.example.com.", 2023010101, 3600, 900, 604800, 300);
+        let r = SoaRecord::new(
+            "@",
+            "ns1.example.com.",
+            "admin.example.com.",
+            2023010101,
+            3600,
+            900,
+            604800,
+            300,
+        );
         assert_eq!(r.mname, "ns1.example.com.");
         assert_eq!(r.rname, "admin.example.com.");
         assert_eq!(r.serial, 2023010101);
@@ -252,11 +267,20 @@ mod tests {
 
     #[test]
     fn soa_record_to_xml() {
-        let r = SoaRecord::new("@", "ns1.example.com.", "admin.example.com.", 2023010101, 3600, 900, 604800, 300);
+        let r = SoaRecord::new(
+            "@",
+            "ns1.example.com.",
+            "admin.example.com.",
+            2023010101,
+            3600,
+            900,
+            604800,
+            300,
+        );
         let xml = r.to_xml().unwrap();
         assert!(xml.contains("<type>SOA</type>"));
-        assert!(xml.contains("<mname>ns1.example.com.</mname>"));
-        assert!(xml.contains("<rname>admin.example.com.</rname>"));
+        assert!(xml.contains("<mname><name>ns1.example.com.</name></mname>"));
+        assert!(xml.contains("<rname><name>admin.example.com.</name></rname>"));
         assert!(xml.contains("<serial>2023010101</serial>"));
     }
 
@@ -276,18 +300,22 @@ mod tests {
     #[test]
     fn srv_record_with_ttl_zero_err() {
         assert!(matches!(
-            SrvRecord::new("_sip._tcp", 10, 20, 5060, "sip.example.com.").with_ttl(0).unwrap_err(),
+            SrvRecord::new("_sip._tcp", 10, 20, 5060, "sip.example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
 
     #[test]
     fn srv_record_to_xml() {
-        let xml = SrvRecord::new("_sip._tcp", 10, 20, 5060, "sip.example.com.").to_xml().unwrap();
+        let xml = SrvRecord::new("_sip._tcp", 10, 20, 5060, "sip.example.com.")
+            .to_xml()
+            .unwrap();
         assert!(xml.contains("<type>SRV</type>"));
         assert!(xml.contains("<priority>10</priority>"));
         assert!(xml.contains("<port>5060</port>"));
-        assert!(xml.contains("<target>sip.example.com.</target>"));
+        assert!(xml.contains("<target><name>sip.example.com.</name></target>"));
     }
 
     // ── PtrRecord ─────────────────────────────────────────────────────────────
@@ -302,16 +330,20 @@ mod tests {
     #[test]
     fn ptr_record_with_ttl_zero_err() {
         assert!(matches!(
-            PtrRecord::new("4.3.2.1.in-addr.arpa.", "example.com.").with_ttl(0).unwrap_err(),
+            PtrRecord::new("4.3.2.1.in-addr.arpa.", "example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
 
     #[test]
     fn ptr_record_to_xml() {
-        let xml = PtrRecord::new("4.3.2.1.in-addr.arpa.", "example.com.").to_xml().unwrap();
+        let xml = PtrRecord::new("4.3.2.1.in-addr.arpa.", "example.com.")
+            .to_xml()
+            .unwrap();
         assert!(xml.contains("<type>PTR</type>"));
-        assert!(xml.contains("<ptr>example.com.</ptr>"));
+        assert!(xml.contains("<ptr><name>example.com.</name></ptr>"));
     }
 
     // ── DnameRecord ───────────────────────────────────────────────────────────
@@ -326,7 +358,9 @@ mod tests {
     #[test]
     fn dname_record_with_ttl_zero_err() {
         assert!(matches!(
-            DnameRecord::new("sub", "example.com.").with_ttl(0).unwrap_err(),
+            DnameRecord::new("sub", "example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
@@ -335,7 +369,7 @@ mod tests {
     fn dname_record_to_xml() {
         let xml = DnameRecord::new("sub", "example.com.").to_xml().unwrap();
         assert!(xml.contains("<type>DNAME</type>"));
-        assert!(xml.contains("<dname>example.com.</dname>"));
+        assert!(xml.contains("<dname><name>example.com.</name></dname>"));
     }
 
     // ── HinfoRecord ───────────────────────────────────────────────────────────
@@ -351,7 +385,9 @@ mod tests {
     #[test]
     fn hinfo_record_with_ttl_zero_err() {
         assert!(matches!(
-            HinfoRecord::new("@", "x86", "Linux").with_ttl(0).unwrap_err(),
+            HinfoRecord::new("@", "x86", "Linux")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
@@ -381,19 +417,23 @@ mod tests {
     #[test]
     fn naptr_record_with_ttl_zero_err() {
         assert!(matches!(
-            NaptrRecord::new("@", 100, 10, "U", "E2U+sip").with_ttl(0).unwrap_err(),
+            NaptrRecord::new("@", 100, 10, "U", "E2U+sip")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
 
     #[test]
     fn naptr_record_to_xml_no_optional() {
-        let xml = NaptrRecord::new("@", 100, 10, "U", "E2U+sip").to_xml().unwrap();
+        let xml = NaptrRecord::new("@", 100, 10, "U", "E2U+sip")
+            .to_xml()
+            .unwrap();
         assert!(xml.contains("<type>NAPTR</type>"));
         assert!(xml.contains("<order>100</order>"));
         assert!(xml.contains("<flags>U</flags>"));
-        assert!(!xml.contains("<regexp>"));
-        assert!(!xml.contains("<replacement>"));
+        assert!(xml.contains("<regexp></regexp>"));
+        assert!(xml.contains("<replacement><name>.</name></replacement>"));
     }
 
     #[test]
@@ -402,8 +442,8 @@ mod tests {
         r.regexp = Some("!^.*$!sip:info@example.com!".to_string());
         r.replacement = Some(".".to_string());
         let xml = r.to_xml().unwrap();
-        assert!(xml.contains("<regexp>"));
-        assert!(xml.contains("<replacement>.</replacement>"));
+        assert!(xml.contains("<regexp>!^.*$!sip:info@example.com!</regexp>"));
+        assert!(xml.contains("<replacement><name>.</name></replacement>"));
     }
 
     // ── RpRecord ──────────────────────────────────────────────────────────────
@@ -419,17 +459,21 @@ mod tests {
     #[test]
     fn rp_record_with_ttl_zero_err() {
         assert!(matches!(
-            RpRecord::new("@", "admin.example.com.", "info.example.com.").with_ttl(0).unwrap_err(),
+            RpRecord::new("@", "admin.example.com.", "info.example.com.")
+                .with_ttl(0)
+                .unwrap_err(),
             DnsApiError::InvalidTtl
         ));
     }
 
     #[test]
     fn rp_record_to_xml() {
-        let xml = RpRecord::new("@", "admin.example.com.", "info.example.com.").to_xml().unwrap();
+        let xml = RpRecord::new("@", "admin.example.com.", "info.example.com.")
+            .to_xml()
+            .unwrap();
         assert!(xml.contains("<type>RP</type>"));
-        assert!(xml.contains("<mbox-dname>admin.example.com.</mbox-dname>"));
-        assert!(xml.contains("<txt-dname>info.example.com.</txt-dname>"));
+        assert!(xml.contains("<mbox-dname><name>admin.example.com.</name></mbox-dname>"));
+        assert!(xml.contains("<txt-dname><name>info.example.com.</name></txt-dname>"));
     }
 
     // ── DnsRecord enum ────────────────────────────────────────────────────────
@@ -478,7 +522,10 @@ mod tests {
             DnsRecord::NAPTR(NaptrRecord::new("naptr", 1, 1, "U", "sip")),
             DnsRecord::RP(RpRecord::new("rp", "mbox.", "txt.")),
         ];
-        let names = ["a","aaaa","cname","mx","ns","txt","soa","srv","ptr","dname","hinfo","naptr","rp"];
+        let names = [
+            "a", "aaaa", "cname", "mx", "ns", "txt", "soa", "srv", "ptr", "dname", "hinfo",
+            "naptr", "rp",
+        ];
         for (record, expected) in records.iter().zip(names.iter()) {
             assert_eq!(record.name(), *expected);
         }
@@ -797,7 +844,7 @@ impl ARecord {
 
     pub fn to_xml(&self) -> Result<String> {
         let mut writer = Writer::new(Cursor::new(Vec::new()));
-        
+
         let mut rr = BytesStart::new("rr");
         if let Some(id) = self.id {
             rr.push_attribute(("id", id.to_string().as_str()));
@@ -1108,7 +1155,9 @@ impl CnameRecord {
         writer.write_event(Event::End(BytesEnd::new("type")))?;
 
         writer.write_event(Event::Start(BytesStart::new("cname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.cname)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("cname")))?;
 
         writer.write_event(Event::End(BytesEnd::new("rr")))?;
@@ -1168,7 +1217,9 @@ impl MxRecord {
         writer.write_event(Event::End(BytesEnd::new("preference")))?;
 
         writer.write_event(Event::Start(BytesStart::new("exchange")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.exchange)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("exchange")))?;
 
         writer.write_event(Event::End(BytesEnd::new("mx")))?;
@@ -1223,7 +1274,9 @@ impl NsRecord {
         writer.write_event(Event::End(BytesEnd::new("type")))?;
 
         writer.write_event(Event::Start(BytesStart::new("ns")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.ns)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("ns")))?;
 
         writer.write_event(Event::End(BytesEnd::new("rr")))?;
@@ -1294,11 +1347,15 @@ impl SoaRecord {
         writer.write_event(Event::Start(BytesStart::new("soa")))?;
 
         writer.write_event(Event::Start(BytesStart::new("mname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.mname)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("mname")))?;
 
         writer.write_event(Event::Start(BytesStart::new("rname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.rname)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("rname")))?;
 
         writer.write_event(Event::Start(BytesStart::new("serial")))?;
@@ -1396,7 +1453,9 @@ impl SrvRecord {
         writer.write_event(Event::End(BytesEnd::new("port")))?;
 
         writer.write_event(Event::Start(BytesStart::new("target")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.target)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("target")))?;
 
         writer.write_event(Event::End(BytesEnd::new("srv")))?;
@@ -1451,7 +1510,9 @@ impl PtrRecord {
         writer.write_event(Event::End(BytesEnd::new("type")))?;
 
         writer.write_event(Event::Start(BytesStart::new("ptr")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.ptr)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("ptr")))?;
 
         writer.write_event(Event::End(BytesEnd::new("rr")))?;
@@ -1504,7 +1565,9 @@ impl DnameRecord {
         writer.write_event(Event::End(BytesEnd::new("type")))?;
 
         writer.write_event(Event::Start(BytesStart::new("dname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.dname)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("dname")))?;
 
         writer.write_event(Event::End(BytesEnd::new("rr")))?;
@@ -1515,7 +1578,11 @@ impl DnameRecord {
 }
 
 impl HinfoRecord {
-    pub fn new(name: impl Into<String>, hardware: impl Into<String>, os: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        hardware: impl Into<String>,
+        os: impl Into<String>,
+    ) -> Self {
         Self {
             id: None,
             name: name.into(),
@@ -1647,17 +1714,19 @@ impl NaptrRecord {
         writer.write_event(Event::Text(BytesText::new(&self.service)))?;
         writer.write_event(Event::End(BytesEnd::new("service")))?;
 
-        if let Some(regexp) = &self.regexp {
-            writer.write_event(Event::Start(BytesStart::new("regexp")))?;
-            writer.write_event(Event::Text(BytesText::new(regexp)))?;
-            writer.write_event(Event::End(BytesEnd::new("regexp")))?;
-        }
+        writer.write_event(Event::Start(BytesStart::new("regexp")))?;
+        writer.write_event(Event::Text(BytesText::new(
+            self.regexp.as_deref().unwrap_or(""),
+        )))?;
+        writer.write_event(Event::End(BytesEnd::new("regexp")))?;
 
-        if let Some(replacement) = &self.replacement {
-            writer.write_event(Event::Start(BytesStart::new("replacement")))?;
-            writer.write_event(Event::Text(BytesText::new(replacement)))?;
-            writer.write_event(Event::End(BytesEnd::new("replacement")))?;
-        }
+        writer.write_event(Event::Start(BytesStart::new("replacement")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
+        writer.write_event(Event::Text(BytesText::new(
+            self.replacement.as_deref().unwrap_or("."),
+        )))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
+        writer.write_event(Event::End(BytesEnd::new("replacement")))?;
 
         writer.write_event(Event::End(BytesEnd::new("naptr")))?;
 
@@ -1714,11 +1783,15 @@ impl RpRecord {
         writer.write_event(Event::Start(BytesStart::new("rp")))?;
 
         writer.write_event(Event::Start(BytesStart::new("mbox-dname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.mbox)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("mbox-dname")))?;
 
         writer.write_event(Event::Start(BytesStart::new("txt-dname")))?;
+        writer.write_event(Event::Start(BytesStart::new("name")))?;
         writer.write_event(Event::Text(BytesText::new(&self.txt)))?;
+        writer.write_event(Event::End(BytesEnd::new("name")))?;
         writer.write_event(Event::End(BytesEnd::new("txt-dname")))?;
 
         writer.write_event(Event::End(BytesEnd::new("rp")))?;
